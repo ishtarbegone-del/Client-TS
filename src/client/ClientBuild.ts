@@ -76,6 +76,29 @@ export default class ClientBuild {
         this.tot = new Int32Array(maxTileZ);
     }
 
+    underlayAt(level: number, x: number, z: number): number {
+        return this.landAt(this.floort1, level, x, z);
+    }
+
+    overlayAt(level: number, x: number, z: number): number {
+        return this.landAt(this.floort2, level, x, z);
+    }
+
+    overlayShapeAt(level: number, x: number, z: number): number {
+        return this.landAt(this.floors, level, x, z);
+    }
+
+    overlayRotAt(level: number, x: number, z: number): number {
+        return this.landAt(this.floorr, level, x, z);
+    }
+
+    private landAt(grid: Uint8Array[][], level: number, x: number, z: number): number {
+        if (level < 0 || level >= grid.length || x < 0 || z < 0 || x >= this.maxTileX || z >= this.maxTileZ) {
+            return 0;
+        }
+        return grid[level][x][z];
+    }
+
     finishBuild(world: World | null, collision: (CollisionMap | null)[]): void {
         for (let level: number = 0; level < BuildArea.LEVELS; level++) {
             for (let x: number = 0; x < BuildArea.SIZE; x++) {

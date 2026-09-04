@@ -24,6 +24,7 @@ import { LocAngle } from '#/dash3d/LocAngle.js';
 import { LocLayer } from '#/dash3d/LocLayer.js';
 import { LOC_SHAPE_TO_LAYER, LocShape } from '#/dash3d/LocShape.js';
 import ClientBuild from '#/client/ClientBuild.js';
+import RefCapture from '#/client/RefCapture.js';
 import World from '#/dash3d/World.js';
 
 import ClientNpc, { NpcUpdate } from '#/dash3d/ClientNpc.js';
@@ -388,6 +389,8 @@ export class Client extends GameShell {
     private minusedlevel: number = 0;
     private selfSlot: number = -1;
     private localPlayer: ClientPlayer | null = null;
+    private refBuild: ClientBuild | null = null;
+    private refNeedCapture: boolean = false;
 
     private entityRemovalCount: number = 0;
     private entityRemovalIds: Int32Array = new Int32Array(1000);
@@ -1073,6 +1076,16 @@ export class Client extends GameShell {
 
     override refresh() {
         this.redrawFrame = true;
+    }
+
+    override stealF12(): boolean {
+        if (!this.ingame || !this.localPlayer) {
+            return false;
+        }
+        const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
+        const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
+        RefCapture.toggle(wx, wz, (msg: string) => this.addChat(0, msg, ''));
+        return true;
     }
 
 	// ----
@@ -2272,6 +2285,8 @@ export class Client extends GameShell {
                 await this.logout();
             }
         }
+
+        this.refNeedCapture = RefCapture.on;
     }
 
     private async logout(): Promise<void> {
@@ -3934,6 +3949,24 @@ export class Client extends GameShell {
         }
 
         this.worldUpdateNum = 0;
+        if (this.refNeedCapture && this.localPlayer) {
+            this.refNeedCapture = false;
+            const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
+            const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
+            void RefCapture.captureTick({
+                loopCycle: this.loopCycle,
+                wx,
+                wz,
+                camYaw: this.camYaw,
+                camPitch: this.camPitch,
+                mapBuildBaseX: this.mapBuildBaseX,
+                mapBuildBaseZ: this.mapBuildBaseZ,
+                groundh: this.groundh,
+                collision: this.collision,
+                world: this.world,
+                build: this.refBuild
+            });
+        }
     }
 
     private gameDrawMain(): void {
@@ -5021,6 +5054,7 @@ export class Client extends GameShell {
 
             this.out.p1Enc(ClientProt.NO_TIMEOUT);
 
+            this.refBuild = build;
             build.finishBuild(this.world, this.collision);
             this.areaViewport?.setPixels();
 

@@ -38,6 +38,9 @@ export default abstract class GameShell {
     protected async mainloop() { }
     protected async maindraw() { }
     protected refresh() { }
+    protected stealF12(): boolean {
+        return false;
+    }
 
     constructor(resizetoFit: boolean = false) {
         canvas.tabIndex = -1;
@@ -83,6 +86,12 @@ export default abstract class GameShell {
 
         canvas.onkeydown = this.onkeydown.bind(this);
         canvas.onkeyup = this.onkeyup.bind(this);
+        window.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'F12' && this.stealF12()) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, true);
 
         canvas.onmousedown = this.onmousedown.bind(this);
         canvas.onpointerdown = this.onpointerdown.bind(this);

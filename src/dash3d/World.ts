@@ -595,6 +595,13 @@ export default class World {
         this.dynamicCount = 0;
     }
 
+    squareAt(level: number, x: number, z: number): Square | null {
+        if (level < 0 || level >= this.maxTileLevel || x < 0 || z < 0 || x >= this.maxTileX || z >= this.maxTileZ) {
+            return null;
+        }
+        return this.squares[level][x][z];
+    }
+
     wallType(level: number, x: number, z: number): number {
         const tile: Square | null = this.squares[level][x][z];
         return !tile || !tile.wall ? 0 : tile.wall.typecode;
