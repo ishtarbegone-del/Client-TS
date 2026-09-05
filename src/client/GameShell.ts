@@ -41,6 +41,12 @@ export default abstract class GameShell {
     protected stealF12(): boolean {
         return false;
     }
+    protected stealF10(): boolean {
+        return false;
+    }
+    protected stealF9(): boolean {
+        return false;
+    }
 
     constructor(resizetoFit: boolean = false) {
         canvas.tabIndex = -1;
@@ -88,6 +94,14 @@ export default abstract class GameShell {
         canvas.onkeyup = this.onkeyup.bind(this);
         window.addEventListener('keydown', (e: KeyboardEvent) => {
             if (e.key === 'F12' && this.stealF12()) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            if (e.key === 'F10' && this.stealF10()) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            if (e.key === 'F9' && this.stealF9()) {
                 e.preventDefault();
                 e.stopPropagation();
             }

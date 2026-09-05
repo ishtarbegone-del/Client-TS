@@ -1,14 +1,39 @@
 import { canvas } from '#/graphics/Canvas.js';
 
 import CollisionMap, { BuildArea } from '#/dash3d/CollisionMap.js';
+import IfType from '#/config/IfType.js';
 import LocType from '#/config/LocType.js';
+import SeqType from '#/config/SeqType.js';
 import type ClientBuild from '#/client/ClientBuild.js';
 import type World from '#/dash3d/World.js';
+import { buildHouseText, buildRoofText, findNearestRoofHouse, floodHouse } from '#/client/HouseBlueprint.js';
+import { buildEquipAlign, buildInvColors, buildInvVerts, buildModelCallbacks, type RefPlayerInv } from '#/client/RefInvDump.js';
+import { buildGroundObjs, buildGroundVerts } from '#/client/RefGroundDump.js';
+import type ClientObj from '#/dash3d/ClientObj.js';
+import type LinkList from '#/datastruct/LinkList.js';
 
 const INGEST = 'http://127.0.0.1:43596/capture';
 const RADIUS = 12;
 const MAX_TICKS = 25;
 const INTERVAL_MS = 600;
+
+export type RefLocAnim = {
+    type: number;
+    seq: number;
+    frame: number;
+    frames: number;
+    duration: number;
+};
+
+export type RefUi = {
+    mainModal: number;
+    sideModal: number;
+    sideTab: number;
+    sideOverlay: number;
+    chatCom: number;
+    tutCom: number;
+    menu: string[];
+};
 
 export type RefDumpCtx = {
     loopCycle: number;
@@ -22,6 +47,12 @@ export type RefDumpCtx = {
     collision: (CollisionMap | null)[];
     world: World | null;
     build: ClientBuild | null;
+    locAnims?: RefLocAnim[];
+    ui?: RefUi;
+    level?: number;
+    player?: RefPlayerInv | null;
+    groundObj?: (LinkList<ClientObj> | null)[][][] | null;
+    mapl?: Uint8Array[][] | null;
 };
 
 export default class RefCapture {
@@ -34,6 +65,97 @@ export default class RefCapture {
     static busy = false;
     static lastStartedMs = 0;
     static notify: ((msg: string) => void) | null = null;
+
+    static async dumpHouse(ctx: RefDumpCtx, chat: (msg: string) => void): Promise<void> {
+        const level = ctx.level ?? 0;
+        const fill = ctx.world
+            ? floodHouse(ctx.world, ctx.mapBuildBaseX, ctx.mapBuildBaseZ, ctx.wx, ctx.wz, level, ctx.collision[level] ?? null)
+            : { inside: false, tiles: [], reason: 'no-world' };
+        const dump = buildHouseText({
+            wx: ctx.wx,
+            wz: ctx.wz,
+            level,
+            baseX: ctx.mapBuildBaseX,
+            baseZ: ctx.mapBuildBaseZ,
+            fill,
+            groundh: ctx.groundh,
+            collision: ctx.collision,
+            world: ctx.world,
+            build: ctx.build
+        });
+        if (!fill.inside) {
+            chat('not inside a house');
+        } else {
+            chat(`inside house tiles=${fill.tiles.length} floor=${level}`);
+        }
+        const now = new Date();
+        const pad = (n: number): string => String(n).padStart(2, '0');
+        const session = `house-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        try {
+            const res = await fetch(INGEST, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: 'house',
+                    session,
+                    tick: 0,
+                    wx: ctx.wx,
+                    wz: ctx.wz,
+                    dump
+                })
+            });
+            if (!res.ok) {
+                console.warn('house dump ingest rejected', res.status);
+            }
+        } catch {
+            console.warn('house dump ingest down — start LostCityRef.bat');
+            chat('house dump ingest down');
+        }
+    }
+
+    static async dumpRoof(ctx: RefDumpCtx, chat: (msg: string) => void): Promise<void> {
+        const pick = ctx.world
+            ? findNearestRoofHouse(ctx.world, ctx.mapBuildBaseX, ctx.mapBuildBaseZ, ctx.wx, ctx.wz, ctx.collision)
+            : { outside: true, seed: { x: ctx.wx, z: ctx.wz }, tiles: [], cluster: [], reason: 'no-world' };
+        const dump = buildRoofText({
+            wx: ctx.wx,
+            wz: ctx.wz,
+            baseX: ctx.mapBuildBaseX,
+            baseZ: ctx.mapBuildBaseZ,
+            pick,
+            groundh: ctx.groundh,
+            world: ctx.world,
+            mapl: ctx.mapl ?? null
+        });
+        if (pick.reason === 'no-roofs' || pick.reason === 'no-world') {
+            chat(`no roof house ${pick.reason}`);
+        } else {
+            chat(`roof house outside=${pick.outside ? 'yes' : 'no'} tiles=${pick.tiles.length} seed=${pick.seed.x},${pick.seed.z}`);
+        }
+        const now = new Date();
+        const pad = (n: number): string => String(n).padStart(2, '0');
+        const session = `roof-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        try {
+            const res = await fetch(INGEST, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: 'roof',
+                    session,
+                    tick: 0,
+                    wx: ctx.wx,
+                    wz: ctx.wz,
+                    dump
+                })
+            });
+            if (!res.ok) {
+                console.warn('roof dump ingest rejected', res.status);
+            }
+        } catch {
+            console.warn('roof dump ingest down — start LostCityRef.bat');
+            chat('roof dump ingest down');
+        }
+    }
 
     static toggle(wx: number, wz: number, chat: (msg: string) => void): boolean {
         this.on = !this.on;
@@ -74,6 +196,12 @@ export default class RefCapture {
         this.tick++;
         const dump = this.buildDump(ctx);
         const build = this.buildGodot(ctx);
+        const invVerts = buildInvVerts(ctx.player ?? null);
+        const invColors = buildInvColors(ctx.player ?? null);
+        const modelCallbacks = buildModelCallbacks(ctx.player ?? null);
+        const equipAlign = buildEquipAlign(ctx.player ?? null);
+        const groundObjs = buildGroundObjs(ctx);
+        const groundVerts = buildGroundVerts(ctx);
         let png = '';
         try {
             png = await this.canvasPng();
@@ -91,7 +219,13 @@ export default class RefCapture {
                     wz: this.startWz,
                     dump,
                     build,
-                    png
+                    png,
+                    invVerts,
+                    invColors,
+                    modelCallbacks,
+                    equipAlign,
+                    groundObjs,
+                    groundVerts
                 })
             });
             if (!res.ok && !this.warned) {
@@ -160,6 +294,10 @@ export default class RefCapture {
                 this.appendLocs(ctx, x, z, lines);
             }
         }
+        lines.push('');
+        this.appendAnims(ctx, lines);
+        lines.push('');
+        this.appendUi(ctx, lines);
         return lines.join('\n') + '\n';
     }
 
@@ -200,6 +338,7 @@ export default class RefCapture {
         lines.push('keep cook-east overlay 22');
         lines.push('do not flatten height');
         lines.push('loc-edits.json only after comparing this dump');
+        lines.push('if ANIMS has no loc seq do not invent a door swing');
         lines.push('');
         const locLines: string[] = [];
         for (let z = ctx.wz - RADIUS; z <= ctx.wz + RADIUS; z++) {
@@ -220,6 +359,10 @@ export default class RefCapture {
         } else {
             lines.push(...locLines);
         }
+        lines.push('');
+        this.appendAnims(ctx, lines);
+        lines.push('');
+        this.appendUi(ctx, lines);
         return lines.join('\n') + '\n';
     }
 
@@ -313,6 +456,60 @@ export default class RefCapture {
         } catch {
             name = '';
         }
-        return `loc kind=${kind} type=${locId} name=${name} shape=${shape} angle=${angle} level=${level} at ${wx},${wz} model1=${model1} model2=${model2}`;
+        let anim = -1;
+        let frames = 0;
+        let duration = 0;
+        try {
+            anim = LocType.list(locId)?.anim ?? -1;
+            if (anim >= 0 && SeqType.list[anim]) {
+                frames = SeqType.list[anim].numFrames;
+                duration = SeqType.list[anim].duration;
+            }
+        } catch {
+            anim = -1;
+        }
+        return `loc kind=${kind} type=${locId} name=${name} shape=${shape} angle=${angle} level=${level} at ${wx},${wz} model1=${model1} model2=${model2} anim=${anim} frames=${frames} duration=${duration}`;
+    }
+
+    private static ifLine(id: number): string {
+        if (id < 0 || !IfType.list[id]) {
+            return String(id);
+        }
+        const com = IfType.list[id];
+        const scripts = com.scripts ? com.scripts.filter(s => s !== null).length : 0;
+        return `${id} type=${com.type} clientCode=${com.clientCode} scripts=${scripts}`;
+    }
+
+    private static appendAnims(ctx: RefDumpCtx, lines: string[]): void {
+        lines.push('ANIMS');
+        const live = ctx.locAnims ?? [];
+        if (live.length === 0) {
+            lines.push('(none)');
+            return;
+        }
+        for (const anim of live) {
+            lines.push(`anim loc type=${anim.type} seq=${anim.seq} frame=${anim.frame} frames=${anim.frames} duration=${anim.duration}`);
+        }
+    }
+
+    private static appendUi(ctx: RefDumpCtx, lines: string[]): void {
+        lines.push('UI');
+        const ui = ctx.ui;
+        if (!ui) {
+            lines.push('(none)');
+            return;
+        }
+        lines.push(`ui mainModal=${this.ifLine(ui.mainModal)}`);
+        lines.push(`ui sideModal=${this.ifLine(ui.sideModal)}`);
+        lines.push(`ui sideTab=${ui.sideTab} overlay=${this.ifLine(ui.sideOverlay)}`);
+        lines.push(`ui chatCom=${this.ifLine(ui.chatCom)}`);
+        lines.push(`ui tutCom=${this.ifLine(ui.tutCom)}`);
+        if (ui.menu.length === 0) {
+            lines.push('ui menu (none)');
+            return;
+        }
+        for (let i = 0; i < ui.menu.length; i++) {
+            lines.push(`ui menu ${i} ${ui.menu[i]}`);
+        }
     }
 }

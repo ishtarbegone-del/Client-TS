@@ -3,7 +3,7 @@ export type JavaKeyCode = {
     ch: number;
 };
 
-export const CanvasEnabledKeys: string[] = ['F11', 'F12'];
+export const CanvasEnabledKeys: string[] = ['F9', 'F10', 'F11', 'F12'];
 
 // could be an array, but mangling properties is a PITA
 export const KeyCodes: Map<string, JavaKeyCode> = new Map();

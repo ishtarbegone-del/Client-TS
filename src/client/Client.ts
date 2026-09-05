@@ -1088,6 +1088,59 @@ export class Client extends GameShell {
         return true;
     }
 
+    override stealF10(): boolean {
+        if (!this.ingame || !this.localPlayer) {
+            return false;
+        }
+        const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
+        const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
+        void RefCapture.dumpHouse(
+            {
+                loopCycle: this.loopCycle,
+                wx,
+                wz,
+                camYaw: this.camYaw,
+                camPitch: this.camPitch,
+                mapBuildBaseX: this.mapBuildBaseX,
+                mapBuildBaseZ: this.mapBuildBaseZ,
+                groundh: this.groundh,
+                collision: this.collision,
+                world: this.world,
+                build: this.refBuild,
+                level: this.minusedlevel
+            },
+            (msg: string) => this.addChat(0, msg, '')
+        );
+        return true;
+    }
+
+    override stealF9(): boolean {
+        if (!this.ingame || !this.localPlayer) {
+            return false;
+        }
+        const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
+        const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
+        void RefCapture.dumpRoof(
+            {
+                loopCycle: this.loopCycle,
+                wx,
+                wz,
+                camYaw: this.camYaw,
+                camPitch: this.camPitch,
+                mapBuildBaseX: this.mapBuildBaseX,
+                mapBuildBaseZ: this.mapBuildBaseZ,
+                groundh: this.groundh,
+                collision: this.collision,
+                world: this.world,
+                build: this.refBuild,
+                level: this.minusedlevel,
+                mapl: this.mapl
+            },
+            (msg: string) => this.addChat(0, msg, '')
+        );
+        return true;
+    }
+
 	// ----
 
     private async titleScreenLoop(): Promise<void> {
@@ -3953,6 +4006,26 @@ export class Client extends GameShell {
             this.refNeedCapture = false;
             const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
             const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
+            const locAnims: { type: number; seq: number; frame: number; frames: number; duration: number }[] = [];
+            for (let loc = this.locList.head(); loc !== null; loc = this.locList.next()) {
+                let seq = -1;
+                try {
+                    seq = LocType.list(loc.index)?.anim ?? -1;
+                } catch {
+                    seq = -1;
+                }
+                locAnims.push({
+                    type: loc.index,
+                    seq,
+                    frame: loc.animFrame,
+                    frames: loc.anim?.numFrames ?? 0,
+                    duration: loc.anim?.duration ?? 0
+                });
+            }
+            const menu: string[] = [];
+            for (let i = 0; i < this.menuNumEntries; i++) {
+                menu.push(this.menuOption[i] ?? '');
+            }
             void RefCapture.captureTick({
                 loopCycle: this.loopCycle,
                 wx,
@@ -3964,7 +4037,28 @@ export class Client extends GameShell {
                 groundh: this.groundh,
                 collision: this.collision,
                 world: this.world,
-                build: this.refBuild
+                build: this.refBuild,
+                locAnims,
+                ui: {
+                    mainModal: this.mainModalId,
+                    sideModal: this.sideModalId,
+                    sideTab: this.sideTab,
+                    sideOverlay: this.sideOverlayId[this.sideTab] ?? -1,
+                    chatCom: this.chatComId,
+                    tutCom: this.tutComId,
+                    menu
+                },
+                player: this.localPlayer
+                    ? {
+                          gender: this.localPlayer.gender,
+                          appearance: Array.from(this.localPlayer.appearance),
+                          x: this.localPlayer.x,
+                          z: this.localPlayer.z,
+                          yaw: this.localPlayer.yaw
+                      }
+                    : null,
+                level: this.minusedlevel,
+                groundObj: this.groundObj
             });
         }
     }
