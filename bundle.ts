@@ -61,6 +61,13 @@ async function applyTerser(script: BunOutput): Promise<boolean> {
                     'willReadFrequently',
                     'usedJSHeapSize',
 
+                    // LostCityRef F-keys (GameShell overrides)
+                    'stealF12',
+                    'stealF10',
+                    'stealF9',
+                    'stealF7',
+                    'stealShiftS',
+
                     // wasm
                     // must be callable:
                     '_abort_js',

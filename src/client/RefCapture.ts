@@ -1,19 +1,33 @@
 import { canvas } from '#/graphics/Canvas.js';
 
 import CollisionMap, { BuildArea } from '#/dash3d/CollisionMap.js';
+import { CollisionFlag } from '#/dash3d/CollisionFlag.js';
+import { MapFlag } from '#/dash3d/MapFlag.js';
+import FloType from '#/config/FloType.js';
 import IfType from '#/config/IfType.js';
 import LocType from '#/config/LocType.js';
 import SeqType from '#/config/SeqType.js';
 import type ClientBuild from '#/client/ClientBuild.js';
 import type World from '#/dash3d/World.js';
-import { buildHouseText, buildRoofText, findNearestRoofHouse, floodHouse } from '#/client/HouseBlueprint.js';
+import {
+    avgHeightM,
+    buildHouseText,
+    buildRoofText,
+    decodeBlockDirs,
+    describeLoc,
+    findNearestRoofHouse,
+    floodHouse,
+    heightAt,
+    locLine,
+    ROOF_SCAN
+} from '#/client/HouseBlueprint.js';
 import { buildEquipAlign, buildInvColors, buildInvVerts, buildModelCallbacks, type RefPlayerInv } from '#/client/RefInvDump.js';
 import { buildGroundObjs, buildGroundVerts } from '#/client/RefGroundDump.js';
 import type ClientObj from '#/dash3d/ClientObj.js';
 import type LinkList from '#/datastruct/LinkList.js';
 
 const INGEST = 'http://127.0.0.1:43596/capture';
-const RADIUS = 12;
+const RADIUS = ROOF_SCAN;
 const MAX_TICKS = 25;
 const INTERVAL_MS = 600;
 
@@ -48,6 +62,9 @@ export type RefDumpCtx = {
     world: World | null;
     build: ClientBuild | null;
     locAnims?: RefLocAnim[];
+    playerLines?: string[];
+    npcLines?: string[];
+    seqLines?: string[];
     ui?: RefUi;
     level?: number;
     player?: RefPlayerInv | null;
@@ -86,7 +103,14 @@ export default class RefCapture {
         if (!fill.inside) {
             chat('not inside a house');
         } else {
-            chat(`inside house tiles=${fill.tiles.length} floor=${level}`);
+            const walkCounts: number[] = [];
+            for (let lvl = 0; lvl < 4; lvl++) {
+                const re = new RegExp(`tile \\d+,\\d+ level=${lvl} flags=\\d+ walk=yes`, 'g');
+                walkCounts.push((dump.match(re) ?? []).length);
+            }
+            chat(
+                `inside house tiles=${fill.tiles.length} floor=${level} walkable L0=${walkCounts[0]} L1=${walkCounts[1]} L2=${walkCounts[2]} L3=${walkCounts[3]}`
+            );
         }
         const now = new Date();
         const pad = (n: number): string => String(n).padStart(2, '0');
@@ -231,11 +255,13 @@ export default class RefCapture {
             if (!res.ok && !this.warned) {
                 this.warned = true;
                 console.warn('ref capture ingest rejected', res.status);
+                this.notify?.(`ingest rejected ${res.status} — start LostCityRef.bat`);
             }
         } catch {
             if (!this.warned) {
                 this.warned = true;
                 console.warn('ref capture ingest down — start LostCityRef.bat');
+                this.notify?.('ingest down — start LostCityRef.bat');
             }
         } finally {
             this.busy = false;
@@ -284,9 +310,16 @@ export default class RefCapture {
         lines.push('TILES');
         for (let z = ctx.wz - RADIUS; z <= ctx.wz + RADIUS; z++) {
             for (let x = ctx.wx - RADIUS; x <= ctx.wx + RADIUS; x++) {
-                lines.push(this.tileLine(ctx, x, z));
+                for (let level = 0; level < BuildArea.LEVELS; level++) {
+                    const line = this.tileLine(ctx, x, z, level);
+                    if (line) {
+                        lines.push(line);
+                    }
+                }
             }
         }
+        lines.push('');
+        this.appendEdges(ctx, lines);
         lines.push('');
         lines.push('LOCS');
         for (let z = ctx.wz - RADIUS; z <= ctx.wz + RADIUS; z++) {
@@ -296,6 +329,8 @@ export default class RefCapture {
         }
         lines.push('');
         this.appendAnims(ctx, lines);
+        lines.push('');
+        this.appendEntities(ctx, lines);
         lines.push('');
         this.appendUi(ctx, lines);
         return lines.join('\n') + '\n';
@@ -362,6 +397,8 @@ export default class RefCapture {
         lines.push('');
         this.appendAnims(ctx, lines);
         lines.push('');
+        this.appendEntities(ctx, lines);
+        lines.push('');
         this.appendUi(ctx, lines);
         return lines.join('\n') + '\n';
     }
@@ -380,30 +417,92 @@ export default class RefCapture {
         return [...counts.keys()].sort().map(key => `n=${counts.get(key)} ${key}`);
     }
 
-    private static tileLine(ctx: RefDumpCtx, wx: number, wz: number): string {
+    private static tileLine(ctx: RefDumpCtx, wx: number, wz: number, level: number): string | null {
         const lx = wx - ctx.mapBuildBaseX;
         const lz = wz - ctx.mapBuildBaseZ;
         if (lx < 0 || lz < 0 || lx >= BuildArea.SIZE || lz >= BuildArea.SIZE) {
-            return `tile ${wx},${wz} off-map`;
+            return level === 0 ? `tile ${wx},${wz} off-map` : null;
         }
-        const h = ctx.groundh?.[0];
-        const h00 = h ? h[lx][lz] : 0;
-        const h10 = h ? h[lx + 1]?.[lz] ?? 0 : 0;
-        const h01 = h ? h[lx][lz + 1] ?? 0 : 0;
-        const h11 = h ? h[lx + 1]?.[lz + 1] ?? 0 : 0;
-        const cmap = ctx.collision[0];
+        const h = heightAt(ctx.groundh, level, lx, lz);
+        const cmap = ctx.collision[level];
         const flags = cmap ? cmap.flags[CollisionMap.index(lx, lz)] : 0;
         let ov = -1;
         let und = -1;
         let packed = -1;
         let rot = -1;
         if (ctx.build) {
-            und = ctx.build.underlayAt(0, lx, lz);
-            ov = ctx.build.overlayAt(0, lx, lz);
-            packed = ctx.build.overlayShapeAt(0, lx, lz);
-            rot = ctx.build.overlayRotAt(0, lx, lz);
+            und = ctx.build.underlayAt(level, lx, lz);
+            ov = ctx.build.overlayAt(level, lx, lz);
+            packed = ctx.build.overlayShapeAt(level, lx, lz);
+            rot = ctx.build.overlayRotAt(level, lx, lz);
         }
-        return `tile ${wx},${wz} lx=${lx},${lz} ov=${ov} packed=${packed} rot=${rot} und=${und} flags=${flags} h=(${h00},${h10},${h01},${h11})`;
+        const mapl = ctx.mapl?.[level]?.[lx]?.[lz] ?? 0;
+        const mapl1 = ctx.mapl?.[1]?.[lx]?.[lz] ?? 0;
+        const linkBelow = (mapl1 & MapFlag.LinkBelow) !== 0;
+        const block = (mapl & MapFlag.Block) !== 0;
+        if (level > 0 && ov <= 0 && und <= 0 && flags === 0 && mapl === 0 && h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0) {
+            return null;
+        }
+        const flo = this.floLook(ov > 0 ? ov : und);
+        const emit = ov > 0 && packed > 0 ? 'tris' : 'flat';
+        const walk = (flags & CollisionFlag.SQ_BLOCKED) === 0 ? 'yes' : 'no';
+        return (
+            `tile ${wx},${wz} level=${level} lx=${lx},${lz} ov=${ov} packed=${packed} rot=${rot} und=${und}` +
+            ` flags=${flags} mapl=${mapl} linkBelow=${linkBelow ? 'yes' : 'no'} block=${block ? 'yes' : 'no'}` +
+            ` walk=${walk} edges=${decodeBlockDirs(flags)} floTex=${flo.tex} floRgb=${flo.rgb} emit=${emit}` +
+            ` h=(${h[0]},${h[1]},${h[2]},${h[3]}) y=${avgHeightM(h).toFixed(3)}`
+        );
+    }
+
+    private static floLook(id: number): { tex: number; rgb: number } {
+        if (id <= 0 || id >= FloType.list.length || !FloType.list[id]) {
+            return { tex: -1, rgb: 0 };
+        }
+        const flo = FloType.list[id];
+        return { tex: flo.texture, rgb: flo.colour };
+    }
+
+    private static appendEdges(ctx: RefDumpCtx, lines: string[]): void {
+        lines.push('EDGES');
+        lines.push('CollisionMap W_N/E/S/W; compare to VR EDGES LIVE');
+        const keys = new Set<string>();
+        for (let level = 0; level < BuildArea.LEVELS; level++) {
+            const cmap = ctx.collision[level];
+            if (!cmap) {
+                continue;
+            }
+            for (let z = ctx.wz - RADIUS; z <= ctx.wz + RADIUS; z++) {
+                for (let x = ctx.wx - RADIUS; x <= ctx.wx + RADIUS; x++) {
+                    const lx = x - ctx.mapBuildBaseX;
+                    const lz = z - ctx.mapBuildBaseZ;
+                    if (lx < 0 || lz < 0 || lx >= BuildArea.SIZE || lz >= BuildArea.SIZE) {
+                        continue;
+                    }
+                    const flags = cmap.flags[CollisionMap.index(lx, lz)];
+                    const add = (bx: number, bz: number) => {
+                        const a = x < bx || (x === bx && z < bz) ? `${x},${z}>${bx},${bz}` : `${bx},${bz}>${x},${z}`;
+                        keys.add(`edge ${a} level=${level}`);
+                    };
+                    if ((flags & CollisionFlag.W_W) !== 0) {
+                        add(x - 1, z);
+                    }
+                    if ((flags & CollisionFlag.W_E) !== 0) {
+                        add(x + 1, z);
+                    }
+                    if ((flags & CollisionFlag.W_N) !== 0) {
+                        add(x, z + 1);
+                    }
+                    if ((flags & CollisionFlag.W_S) !== 0) {
+                        add(x, z - 1);
+                    }
+                }
+            }
+        }
+        if (keys.size === 0) {
+            lines.push('(none in radius)');
+            return;
+        }
+        lines.push(...[...keys].sort());
     }
 
     private static appendLocs(ctx: RefDumpCtx, wx: number, wz: number, lines: string[]): void {
@@ -422,15 +521,19 @@ export default class RefCapture {
             }
             if (tile.wall) {
                 const info = tile.wall.typecode2 & 0xff;
-                lines.push(this.locLine('wall', tile.wall.typecode, info, level, wx, wz, tile.wall.model1 ? 'yes' : 'no', tile.wall.model2 ? 'yes' : 'no'));
+                lines.push(
+                    this.locDumpLine('wall', tile.wall.typecode, info, level, wx, wz, lx, lz, ctx, tile.wall.model1 ? 'yes' : 'no', tile.wall.model2 ? 'yes' : 'no')
+                );
             }
             if (tile.decor) {
                 const info = tile.decor.typecode2 & 0xff;
-                lines.push(this.locLine('decor', tile.decor.typecode, info, level, wx, wz, tile.decor.model ? 'yes' : 'no', 'no'));
+                lines.push(this.locDumpLine('decor', tile.decor.typecode, info, level, wx, wz, lx, lz, ctx, tile.decor.model ? 'yes' : 'no', 'no'));
             }
             if (tile.groundDecor) {
                 const info = tile.groundDecor.typecode2 & 0xff;
-                lines.push(this.locLine('gdecor', tile.groundDecor.typecode, info, level, wx, wz, tile.groundDecor.model ? 'yes' : 'no', 'no'));
+                lines.push(
+                    this.locDumpLine('gdecor', tile.groundDecor.typecode, info, level, wx, wz, lx, lz, ctx, tile.groundDecor.model ? 'yes' : 'no', 'no')
+                );
             }
             for (let i = 0; i < tile.spriteCount; i++) {
                 const sprite = tile.sprites[i];
@@ -441,21 +544,25 @@ export default class RefCapture {
                     continue;
                 }
                 const info = sprite.typecode2 & 0xff;
-                lines.push(this.locLine('scenery', sprite.typecode, info, level, wx, wz, sprite.model ? 'yes' : 'no', 'no'));
+                lines.push(this.locDumpLine('scenery', sprite.typecode, info, level, wx, wz, lx, lz, ctx, sprite.model ? 'yes' : 'no', 'no'));
             }
         }
     }
 
-    private static locLine(kind: string, typecode: number, info: number, level: number, wx: number, wz: number, model1: string, model2: string): string {
+    private static locDumpLine(
+        kind: string,
+        typecode: number,
+        info: number,
+        level: number,
+        wx: number,
+        wz: number,
+        lx: number,
+        lz: number,
+        ctx: RefDumpCtx,
+        model1: string,
+        model2: string
+    ): string {
         const locId = (typecode >> 14) & 0x7fff;
-        const shape = info & 0x1f;
-        const angle = (info >> 6) & 0x3;
-        let name = '';
-        try {
-            name = LocType.list(locId)?.name ?? '';
-        } catch {
-            name = '';
-        }
         let anim = -1;
         let frames = 0;
         let duration = 0;
@@ -468,7 +575,21 @@ export default class RefCapture {
         } catch {
             anim = -1;
         }
-        return `loc kind=${kind} type=${locId} name=${name} shape=${shape} angle=${angle} level=${level} at ${wx},${wz} model1=${model1} model2=${model2} anim=${anim} frames=${frames} duration=${duration}`;
+        const live = ` model1=${model1} model2=${model2} anim=${anim} frames=${frames} duration=${duration}`;
+        const loc = describeLoc(kind, typecode, info, level, wx, wz);
+        const yM = avgHeightM(heightAt(ctx.groundh, level, lx, lz));
+        if (loc) {
+            return locLine(loc, yM) + live;
+        }
+        const shape = info & 0x1f;
+        const angle = (info >> 6) & 0x3;
+        let name = '';
+        try {
+            name = LocType.list(locId)?.name ?? '';
+        } catch {
+            name = '';
+        }
+        return `loc kind=${kind} type=${locId} name=${name} shape=${shape} angle=${angle} level=${level} at ${wx},${wz} y=${yM.toFixed(3)}${live}`;
     }
 
     private static ifLine(id: number): string {
@@ -489,6 +610,30 @@ export default class RefCapture {
         }
         for (const anim of live) {
             lines.push(`anim loc type=${anim.type} seq=${anim.seq} frame=${anim.frame} frames=${anim.frames} duration=${anim.duration}`);
+        }
+    }
+
+    private static appendEntities(ctx: RefDumpCtx, lines: string[]): void {
+        lines.push('PLAYERS');
+        const players = ctx.playerLines ?? [];
+        if (players.length === 0) {
+            lines.push('(none)');
+        } else {
+            lines.push(...players);
+        }
+        lines.push('NPCS');
+        const npcs = ctx.npcLines ?? [];
+        if (npcs.length === 0) {
+            lines.push('(none)');
+        } else {
+            lines.push(...npcs);
+        }
+        lines.push('SEQS');
+        const seqs = ctx.seqLines ?? [];
+        if (seqs.length === 0) {
+            lines.push('(none)');
+        } else {
+            lines.push(...seqs);
         }
     }
 

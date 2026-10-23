@@ -297,6 +297,91 @@ function addCollisionEdges(edges: Set<string>, cmap: CollisionMap | null, baseX:
     }
 }
 
+function isWalkableFlags(flags: number): boolean {
+    return (flags & CollisionFlag.SQ_BLOCKED) === 0;
+}
+
+export function decodeBlockDirs(flags: number): string {
+    let out = '';
+    if ((flags & CollisionFlag.W_N) !== 0) {
+        out += 'N';
+    }
+    if ((flags & CollisionFlag.W_E) !== 0) {
+        out += 'E';
+    }
+    if ((flags & CollisionFlag.W_S) !== 0) {
+        out += 'S';
+    }
+    if ((flags & CollisionFlag.W_W) !== 0) {
+        out += 'W';
+    }
+    return out.length > 0 ? out : 'none';
+}
+
+function edgeTouchesFlood(key: string, floodKeys: Set<string>): boolean {
+    const parts = key.split('>');
+    if (parts.length !== 2) {
+        return false;
+    }
+    return parts.some(part => floodKeys.has(part));
+}
+
+function appendWalkClipSections(
+    lines: string[],
+    args: {
+        baseX: number;
+        baseZ: number;
+        tiles: HouseTile[];
+        collision: (CollisionMap | null)[];
+    }
+): number[] {
+    const { baseX, baseZ, tiles, collision } = args;
+    const floodKeys = new Set(tiles.map(t => `${t.x},${t.z}`));
+    const walkCounts: number[] = [];
+    lines.push('WALK');
+    lines.push(
+        'CollisionMap walkable floors over FLOOR flood tiles for levels 0-3; walk=yes when (flags & SQ_BLOCKED)==0'
+    );
+    for (let lvl = 0; lvl < BuildArea.LEVELS; lvl++) {
+        const cmap = collision[lvl] ?? null;
+        let walkable = 0;
+        for (const t of tiles) {
+            const lx = t.x - baseX;
+            const lz = t.z - baseZ;
+            if (lx < 0 || lz < 0 || lx >= BuildArea.SIZE || lz >= BuildArea.SIZE) {
+                continue;
+            }
+            const flags = cmap ? cmap.flags[CollisionMap.index(lx, lz)] : CollisionFlag.UNLOADED;
+            const walk = isWalkableFlags(flags);
+            if (walk) {
+                walkable++;
+            }
+            lines.push(
+                `tile ${t.x},${t.z} level=${lvl} flags=${flags} walk=${walk ? 'yes' : 'no'} block=${decodeBlockDirs(flags)} sq=${walk ? 'open' : 'blocked'}`
+            );
+        }
+        walkCounts.push(walkable);
+    }
+    lines.push('');
+    lines.push('CLIP');
+    lines.push('CollisionMap W_N/E/S/W edges touching FLOOR flood; compare to VR EDGES LIVE / story edges');
+    let clipAny = false;
+    for (let lvl = 0; lvl < BuildArea.LEVELS; lvl++) {
+        const edges = new Set<string>();
+        addCollisionEdges(edges, collision[lvl] ?? null, baseX, baseZ);
+        const filtered = [...edges].filter(key => edgeTouchesFlood(key, floodKeys));
+        filtered.sort();
+        for (const key of filtered) {
+            clipAny = true;
+            lines.push(`edge ${key} level=${lvl}`);
+        }
+    }
+    if (!clipAny) {
+        lines.push('(none)');
+    }
+    return walkCounts;
+}
+
 function locTypeOf(type: number): LocType | null {
     try {
         return LocType.list(type);
@@ -479,7 +564,7 @@ function modelBits(modelId: number): { hasalpha: boolean; tex: number[] } {
     }
 }
 
-function describeLoc(kind: string, typecode: number, info: number, level: number, wx: number, wz: number): HouseLoc | null {
+export function describeLoc(kind: string, typecode: number, info: number, level: number, wx: number, wz: number): HouseLoc | null {
     const { type, shape, angle } = locInfo(typecode, info);
     let loc: LocType | null = null;
     try {
@@ -544,7 +629,7 @@ export function collectHouseLocs(world: World, baseX: number, baseZ: number, til
     return out;
 }
 
-function heightAt(groundh: Int32Array[][] | null, level: number, lx: number, lz: number): [number, number, number, number] {
+export function heightAt(groundh: Int32Array[][] | null, level: number, lx: number, lz: number): [number, number, number, number] {
     const h = groundh?.[level];
     if (!h) {
         return [0, 0, 0, 0];
@@ -552,11 +637,11 @@ function heightAt(groundh: Int32Array[][] | null, level: number, lx: number, lz:
     return [h[lx]?.[lz] ?? 0, h[lx + 1]?.[lz] ?? 0, h[lx]?.[lz + 1] ?? 0, h[lx + 1]?.[lz + 1] ?? 0];
 }
 
-function avgHeightM(h: [number, number, number, number]): number {
+export function avgHeightM(h: [number, number, number, number]): number {
     return (h[0] + h[1] + h[2] + h[3]) / 4 / 128;
 }
 
-function locLine(loc: HouseLoc, yM: number): string {
+export function locLine(loc: HouseLoc, yM: number): string {
     return (
         `loc kind=${loc.kind} type=${loc.type} name=${loc.name} shape=${loc.shape} angle=${loc.angle} level=${loc.level} at ${loc.x},${loc.z}` +
         ` size=${loc.width}x${loc.length} wallwidth=${loc.wallwidth}` +
@@ -624,6 +709,13 @@ export function buildHouseText(args: {
         );
     }
     lines.push('');
+    appendWalkClipSections(lines, {
+        baseX,
+        baseZ,
+        tiles: fill.tiles,
+        collision: args.collision
+    });
+    lines.push('');
     lines.push('LOCS');
     const locs = args.world ? collectHouseLocs(args.world, baseX, baseZ, fill.tiles, level, false) : [];
     if (locs.length === 0) {
@@ -653,11 +745,11 @@ export function buildHouseText(args: {
             return;
         }
         lines.push(
-            'VR every flood tile must have 1933 shape 17 at L1 Y; edge may also keep 12/14; pad 13 remap to 12; hide 16 off-floor; hide 1793'
+            'VR show L1 roofs at dump Y; hide L3 while L1 walls are hidden; do not flatten'
         );
         for (const loc of roofs) {
             const onFloor = floodKeys.has(`${loc.x},${loc.z}`);
-            const hide = loc.shape === 16 && !onFloor ? ' hide=gable' : ' spawn=L1Y';
+            const hide = loc.level >= 3 ? ' hide=L3' : loc.shape === 16 && !onFloor ? ' hide=gable' : ' spawn=dumpY';
             lines.push(
                 `${locLine(loc, roofY(loc))} material=2004-loc-${loc.type} placement=tile ${loc.x},${loc.z} level=${loc.level}${hide}`
             );
@@ -700,7 +792,7 @@ export function buildHouseText(args: {
     }
     lines.push('');
     lines.push('GAPS');
-    lines.push('flood tiles with no 1933 shape 17; VR spawn 1933 shape 17 at L1 Y');
+    lines.push('flood tiles with no 1933 shape 17 — 2004 gap, do not invent; do not flatten');
     if (gapTiles.length === 0) {
         lines.push('(none)');
     } else {
@@ -747,6 +839,7 @@ export function buildHouseText(args: {
     lines.push('');
     lines.push('VR');
     lines.push('compare this folder to a VR F12 dump');
+    lines.push('compare CLIP to VR EDGES LIVE / story edges');
     lines.push('keep cook-east overlay 22');
     lines.push('walk uses _edges (shape 0/9/4-8 one side, 1/3 none, 2 both) plus occupy 9/10/11/walldecor');
     lines.push('do not invent locs');

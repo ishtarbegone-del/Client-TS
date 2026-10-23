@@ -47,6 +47,12 @@ export default abstract class GameShell {
     protected stealF9(): boolean {
         return false;
     }
+    protected stealF7(): boolean {
+        return false;
+    }
+    protected stealShiftS(): boolean {
+        return false;
+    }
 
     constructor(resizetoFit: boolean = false) {
         canvas.tabIndex = -1;
@@ -102,6 +108,14 @@ export default abstract class GameShell {
                 e.stopPropagation();
             }
             if (e.key === 'F9' && this.stealF9()) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            if (e.key === 'F7' && this.stealF7()) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && e.code === 'KeyS' && this.stealShiftS()) {
                 e.preventDefault();
                 e.stopPropagation();
             }

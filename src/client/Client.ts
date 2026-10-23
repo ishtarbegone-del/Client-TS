@@ -25,6 +25,8 @@ import { LocLayer } from '#/dash3d/LocLayer.js';
 import { LOC_SHAPE_TO_LAYER, LocShape } from '#/dash3d/LocShape.js';
 import ClientBuild from '#/client/ClientBuild.js';
 import RefCapture from '#/client/RefCapture.js';
+import RefAnimLog from '#/client/RefAnimLog.js';
+import { collectSeqIds, formatSeqBlock, npcAnimLine, playerAnimLine } from '#/client/RefEntityAnim.js';
 import World from '#/dash3d/World.js';
 
 import ClientNpc, { NpcUpdate } from '#/dash3d/ClientNpc.js';
@@ -1078,6 +1080,16 @@ export class Client extends GameShell {
         this.redrawFrame = true;
     }
 
+    override stealShiftS(): boolean {
+        if (!this.ingame || this.chatInput.length > 0) {
+            return false;
+        }
+        this.out.p1Enc(ClientProt.CLIENT_CHEAT);
+        this.out.p1('maxme'.length + 1);
+        this.out.pjstr('maxme');
+        return true;
+    }
+
     override stealF12(): boolean {
         if (!this.ingame || !this.localPlayer) {
             return false;
@@ -1085,6 +1097,16 @@ export class Client extends GameShell {
         const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
         const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
         RefCapture.toggle(wx, wz, (msg: string) => this.addChat(0, msg, ''));
+        return true;
+    }
+
+    override stealF7(): boolean {
+        if (!this.ingame || !this.localPlayer) {
+            return false;
+        }
+        const wx: number = (this.localPlayer.x >> 7) + this.mapBuildBaseX;
+        const wz: number = (this.localPlayer.z >> 7) + this.mapBuildBaseZ;
+        RefAnimLog.toggle(wx, wz, (msg: string) => this.addChat(0, msg, ''));
         return true;
     }
 
@@ -1139,6 +1161,76 @@ export class Client extends GameShell {
             (msg: string) => this.addChat(0, msg, '')
         );
         return true;
+    }
+
+    private collectEntityAnimDump(): { playerLines: string[]; npcLines: string[]; seqLines: string[] } {
+        const empty = { playerLines: [] as string[], npcLines: [] as string[], seqLines: [] as string[] };
+        try {
+            const playerLines: string[] = [];
+            const npcLines: string[] = [];
+            const players: ClientPlayer[] = [];
+            const npcs: ClientNpc[] = [];
+            for (let i = -1; i < this.playerCount; i++) {
+                const index = i === -1 ? LOCAL_PLAYER_INDEX : this.playerIds[i];
+                const player = this.players[index];
+                if (!player) {
+                    continue;
+                }
+                players.push(player);
+                playerLines.push(playerAnimLine(index, player, this.mapBuildBaseX, this.mapBuildBaseZ));
+            }
+            for (let i = 0; i < this.npcCount; i++) {
+                const index = this.npcIds[i];
+                const npc = this.npc[index];
+                if (!npc || !npc.type) {
+                    continue;
+                }
+                npcs.push(npc);
+                npcLines.push(npcAnimLine(index, npc, this.mapBuildBaseX, this.mapBuildBaseZ));
+            }
+            return { playerLines, npcLines, seqLines: formatSeqBlock(collectSeqIds(players, npcs)) };
+        } catch (e) {
+            console.warn('entity anim dump failed', e);
+            return empty;
+        }
+    }
+
+    private buildAnimLogDump(): string {
+        const wx: number = (this.localPlayer!.x >> 7) + this.mapBuildBaseX;
+        const wz: number = (this.localPlayer!.z >> 7) + this.mapBuildBaseZ;
+        const lines: string[] = [];
+        lines.push(`tick loopCycle=${this.loopCycle} t=${new Date().toISOString()} ${wx},${wz} players=${this.playerCount + 1} npcs=${this.npcCount}`);
+        try {
+            const dump = this.collectEntityAnimDump();
+            lines.push('PLAYERS');
+            if (dump.playerLines.length === 0) {
+                lines.push('(none)');
+            } else {
+                lines.push(...dump.playerLines);
+            }
+            lines.push('NPCS');
+            if (dump.npcLines.length === 0) {
+                lines.push('(none)');
+            } else {
+                lines.push(...dump.npcLines);
+            }
+            lines.push('SEQS');
+            if (dump.seqLines.length === 0) {
+                lines.push('(none)');
+            } else {
+                lines.push(...dump.seqLines);
+            }
+        } catch (e) {
+            console.warn('anim log dump failed', e);
+            lines.push('PLAYERS');
+            lines.push('(none)');
+            lines.push('NPCS');
+            lines.push('(none)');
+            lines.push('SEQS');
+            lines.push('(none)');
+        }
+        lines.push('');
+        return lines.join('\n');
     }
 
 	// ----
@@ -2340,6 +2432,9 @@ export class Client extends GameShell {
         }
 
         this.refNeedCapture = RefCapture.on;
+        if (RefAnimLog.on && this.localPlayer) {
+            void RefAnimLog.logTick(this.loopCycle, this.buildAnimLogDump());
+        }
     }
 
     private async logout(): Promise<void> {
@@ -4022,6 +4117,12 @@ export class Client extends GameShell {
                     duration: loc.anim?.duration ?? 0
                 });
             }
+            let entities = { playerLines: [] as string[], npcLines: [] as string[], seqLines: [] as string[] };
+            try {
+                entities = this.collectEntityAnimDump();
+            } catch (e) {
+                console.warn('entity anim dump failed', e);
+            }
             const menu: string[] = [];
             for (let i = 0; i < this.menuNumEntries; i++) {
                 menu.push(this.menuOption[i] ?? '');
@@ -4039,6 +4140,9 @@ export class Client extends GameShell {
                 world: this.world,
                 build: this.refBuild,
                 locAnims,
+                playerLines: entities.playerLines,
+                npcLines: entities.npcLines,
+                seqLines: entities.seqLines,
                 ui: {
                     mainModal: this.mainModalId,
                     sideModal: this.sideModalId,
@@ -4058,7 +4162,8 @@ export class Client extends GameShell {
                       }
                     : null,
                 level: this.minusedlevel,
-                groundObj: this.groundObj
+                groundObj: this.groundObj,
+                mapl: this.mapl
             });
         }
     }

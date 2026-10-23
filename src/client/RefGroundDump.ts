@@ -1,4 +1,5 @@
 import { BuildArea } from '#/dash3d/CollisionMap.js';
+import { ROOF_SCAN } from '#/client/HouseBlueprint.js';
 import type World from '#/dash3d/World.js';
 import type ClientObj from '#/dash3d/ClientObj.js';
 import type GroundObject from '#/dash3d/GroundObject.js';
@@ -6,7 +7,7 @@ import type LinkList from '#/datastruct/LinkList.js';
 import type Model from '#/dash3d/Model.js';
 import ObjType from '#/config/ObjType.js';
 
-const RADIUS = 12;
+const RADIUS = ROOF_SCAN;
 
 export type GroundDumpCtx = {
     wx: number;
